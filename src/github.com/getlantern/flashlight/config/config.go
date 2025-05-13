@@ -62,7 +62,6 @@ type Config struct {
 	CpuProfile      string
 	MemProfile      string
 	UpdateServerURL string
-	UIAddr          string // UI HTTP server address
 	Client          *client.ClientConfig
 	ProxiedSites    *proxiedsites.Config // List of proxied site domains that get routed through Lantern rather than accessed directly
 	TrustedCAs      []*CA
@@ -325,11 +324,6 @@ func (updated *Config) applyFlags(flags map[string]interface{}) error {
 			updated.CloudConfigCA = value.(string)
 		case "instanceid":
 			updated.Client.DeviceID = value.(string)
-
-		// HTTP-server
-		case "uiaddr":
-			updated.UIAddr = value.(string)
-
 		case "cpuprofile":
 			updated.CpuProfile = value.(string)
 		case "memprofile":
@@ -350,10 +344,6 @@ func (updated *Config) applyFlags(flags map[string]interface{}) error {
 // flashlight, this function should be updated to provide sensible defaults for
 // those settings.
 func (cfg *Config) ApplyDefaults() {
-	if cfg.UIAddr == "" {
-		cfg.UIAddr = "127.0.0.1:16823"
-	}
-
 	if cfg.UpdateServerURL == "" {
 		cfg.UpdateServerURL = "https://update.getlantern.org"
 	}
@@ -447,6 +437,23 @@ func (cfg *Config) applyClientDefaults() {
 		cfg.Client.ChainedServers = make(map[string]*client.ChainedServerInfo)
 	}
 
+	if cfg.Client.ProxiedCONNECTPorts == nil {
+		cfg.Client.ProxiedCONNECTPorts = []int{
+			// Standard HTTP(S) ports
+			80, 443,
+			// Common unprivileged HTTP(S) ports
+			8080, 8443,
+			// XMPP
+			5222, 5223, 5224,
+			// Android
+			5228, 5229,
+			// udpgw
+			7300,
+			// Google Hangouts TCP Ports (see https://support.google.com/a/answer/1279090?hl=en)
+			19305, 19306, 19307, 19308, 19309,
+		}
+	}
+
 	// Sort servers so that they're always in a predictable order
 	cfg.Client.SortServers()
 
@@ -457,9 +464,11 @@ func (cfg Config) cloudPollSleepTime() time.Duration {
 }
 
 func (cfg *Config) fetchCloudConfig(url string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
+	cb := "?" + uuid.New()
+	nocache := url + cb
+	req, err := http.NewRequest("GET", nocache, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to construct request for cloud config at %s: %s", url, err)
+		return nil, fmt.Errorf("Unable to construct request for cloud config at %s: %s", nocache, err)
 	}
 	if lastCloudConfigETag[url] != "" {
 		// Don't bother fetching if unchanged
@@ -470,7 +479,7 @@ func (cfg *Config) fetchCloudConfig(url string) ([]byte, error) {
 	// Prevents intermediate nodes (domain-fronters) from caching the content
 	req.Header.Set("Cache-Control", "no-cache")
 	// Set the fronted URL to lookup the config in parallel using chained and domain fronted servers.
-	req.Header.Set("Lantern-Fronted-URL", frontedCloudConfigUrl)
+	req.Header.Set("Lantern-Fronted-URL", frontedCloudConfigUrl+cb)
 
 	// make sure to close the connection after reading the Body
 	// this prevents the occasional EOFs errors we're seeing with
